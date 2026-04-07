@@ -62,20 +62,20 @@ def grade_task1(flagged_pairs, false_positive_ids, submitted_finding, steps_used
     near_norm = {norm(p) for p in gt["near_duplicates"]}
 
     exact_found = flagged_norm & exact_norm
-    exact_score = len(exact_found) * 0.45
+    exact_score = len(exact_found) * 0.50
     breakdown["exact_duplicates"] = exact_score
     score += exact_score
     if exact_found:
         reasons.append(f"Exact duplicates found (+{exact_score:.2f})")
 
     near_found = flagged_norm & near_norm
-    near_score = len(near_found) * 0.25
+    near_score = len(near_found) * 0.30
     breakdown["near_duplicates"] = near_score
     score += near_score
     if near_found:
         reasons.append(f"Near duplicates found (+{near_score:.2f})")
 
-    fp_penalty = len(false_positive_ids) * 0.12
+    fp_penalty = len(false_positive_ids) * 0.20
     breakdown["false_positive_penalty"] = -fp_penalty
     score -= fp_penalty
     if fp_penalty > 0:
@@ -86,11 +86,34 @@ def grade_task1(flagged_pairs, false_positive_ids, submitted_finding, steps_used
             breakdown["correct_finding_type"] = 0.10
             score += 0.10
             reasons.append("Correct finding type (+0.10)")
+        elif submitted_finding.get("finding_type") == "clean":
+            breakdown["correct_finding_type"] = -0.10
+            score -= 0.10
+            reasons.append("Incorrect clean finding (-0.10)")
+        else:
+            breakdown["correct_finding_type"] = -0.05
+            score -= 0.05
+            reasons.append("Wrong finding type (-0.05)")
         evidence = submitted_finding.get("evidence") or []
-        if "CLAIM-001" in evidence and "CLAIM-002" in evidence:
+        if "CLAIM-001" in evidence and "CLAIM-002" in evidence and len(evidence) >= 2:
             breakdown["evidence_quality"] = 0.10
             score += 0.10
             reasons.append("Correct evidence cited (+0.10)")
+        elif evidence:
+            breakdown["evidence_quality"] = -0.05
+            score -= 0.05
+            reasons.append("Incomplete evidence (-0.05)")
+        else:
+            breakdown["evidence_quality"] = -0.10
+            score -= 0.10
+            reasons.append("Missing evidence (-0.10)")
+
+    if not exact_found:
+        breakdown["exact_missing_penalty"] = -0.10
+        score -= 0.10
+    if not near_found:
+        breakdown["near_missing_penalty"] = -0.05
+        score -= 0.05
 
     if steps_used <= max(1, max_steps // 2):
         breakdown["efficiency_bonus"] = 0.05
@@ -133,6 +156,9 @@ def grade_task2(ownership_hops_found, conflict_flagged, conflicted_person, submi
                 score += weight
                 reasons.append(f"Hop {i+1} traced (+{weight:.2f})")
                 break
+        else:
+            breakdown[f"hop_{i+1}_missing"] = -0.05
+            score -= 0.05
 
     if conflict_flagged:
         breakdown["conflict_flagged"] = 0.10
@@ -143,20 +169,52 @@ def grade_task2(ownership_hops_found, conflict_flagged, conflicted_person, submi
             breakdown["correct_person"] = 0.10
             score += 0.10
             reasons.append("Correct conflicted person (+0.10)")
+        else:
+            breakdown["correct_person"] = -0.05
+            score -= 0.05
+            reasons.append("Wrong conflicted person (-0.05)")
+    else:
+        breakdown["conflict_flagged"] = -0.10
+        score -= 0.10
+        reasons.append("Conflict not flagged (-0.10)")
 
     if submitted_finding:
         if submitted_finding.get("finding_type") in ("shell_company", "fca_violation"):
             breakdown["finding_type"] = 0.05; score += 0.05
+        elif submitted_finding.get("finding_type") == "clean":
+            breakdown["finding_type"] = -0.10; score -= 0.10
+            reasons.append("Incorrect clean finding (-0.10)")
+        else:
+            breakdown["finding_type"] = -0.05; score -= 0.05
         amount = submitted_finding.get("amount_at_risk") or 0
         if amount and abs(amount - gt["total_amount_at_risk"]) / gt["total_amount_at_risk"] < 0.15:
             breakdown["correct_amount"] = 0.05; score += 0.05
             reasons.append("Amount correct (+0.05)")
+        elif amount:
+            breakdown["correct_amount"] = -0.05; score -= 0.05
+            reasons.append("Amount off target (-0.05)")
+        else:
+            breakdown["correct_amount"] = -0.03; score -= 0.03
+            reasons.append("Missing amount (-0.03)")
         ev = set(submitted_finding.get("evidence") or [])
         overlap = ev & set(gt["key_evidence"])
-        ev_score = min(0.10, len(overlap) * 0.025)
+        ev_score = min(0.15, len(overlap) * 0.05)
         breakdown["evidence"] = ev_score; score += ev_score
         if overlap:
             reasons.append(f"{len(overlap)} key docs cited (+{ev_score:.2f})")
+        if ev and not overlap:
+            breakdown["evidence_penalty"] = -0.10
+            score -= 0.10
+            reasons.append("Wrong evidence cited (-0.10)")
+        if len(ev) < 3:
+            breakdown["evidence_completeness"] = -0.05
+            score -= 0.05
+            reasons.append("Too little evidence (-0.05)")
+    else:
+        breakdown["finding_type"] = -0.10
+        breakdown["correct_amount"] = -0.05
+        score -= 0.15
+        reasons.append("Missing finding (-0.15)")
 
     return Reward(
         value=round(max(0.0, min(1.0, score)), 4),
@@ -178,16 +236,24 @@ def grade_task3(submitted_finding, evidence_cited, steps_used, max_steps):
 
     defendant = (submitted_finding.get("defendant") or "").lower()
     if "medisupply" in defendant or "medi supply" in defendant:
-        breakdown["defendant"] = 0.20; score += 0.20
-        reasons.append("Correct defendant (+0.20)")
+        breakdown["defendant"] = 0.25; score += 0.25
+        reasons.append("Correct defendant (+0.25)")
     elif any(k in defendant for k in ["poole", "sloane"]):
-        breakdown["defendant"] = 0.08; score += 0.08
-        reasons.append("Individual defendant (partial) (+0.08)")
+        breakdown["defendant"] = 0.03; score += 0.03
+        reasons.append("Individual defendant (partial) (+0.03)")
+    elif defendant:
+        breakdown["defendant"] = -0.05
+        score -= 0.05
+        reasons.append("Wrong defendant (-0.05)")
 
     ft = (submitted_finding.get("finding_type") or "").lower()
     if ft in ("fca_violation", "overbilling"):
         breakdown["violation_type"] = 0.15; score += 0.15
         reasons.append("Correct violation type (+0.15)")
+    elif ft == "clean":
+        breakdown["violation_type"] = -0.10
+        score -= 0.10
+        reasons.append("Incorrect clean finding (-0.10)")
 
     amount = submitted_finding.get("amount_at_risk") or 0
     if amount and gt["amount_at_risk_min"] <= amount <= gt["amount_at_risk_max"]:
@@ -196,15 +262,39 @@ def grade_task3(submitted_finding, evidence_cited, steps_used, max_steps):
     elif amount:
         mid = (gt["amount_at_risk_min"] + gt["amount_at_risk_max"]) / 2
         if abs(amount - mid) / mid < 0.30:
-            breakdown["amount"] = 0.07; score += 0.07
-            reasons.append("Amount roughly correct (+0.07)")
+            breakdown["amount"] = 0.04; score += 0.04
+            reasons.append("Amount roughly correct (+0.04)")
+        else:
+            breakdown["amount"] = -0.05
+            score -= 0.05
+            reasons.append("Wrong amount range (-0.05)")
+    else:
+        breakdown["amount"] = -0.03
+        score -= 0.03
+        reasons.append("Missing amount (-0.03)")
 
     ev_set = set(evidence_cited)
     overlap = ev_set & set(gt["key_evidence"])
-    ev_score = min(0.20, len(overlap) * 0.05)
+    if len(overlap) >= 3:
+        ev_score = 0.25
+    elif len(overlap) == 2:
+        ev_score = 0.12
+    elif len(overlap) == 1:
+        ev_score = 0.04
+    else:
+        ev_score = 0.0
     breakdown["evidence"] = ev_score; score += ev_score
     if overlap:
         reasons.append(f"{len(overlap)} key docs (+{ev_score:.2f})")
+    if evidence_cited and not overlap:
+        breakdown["evidence_penalty"] = -0.10
+        score -= 0.10
+        reasons.append("No key evidence cited (-0.10)")
+
+    if len(evidence_cited or []) < 3:
+        breakdown["evidence_completeness"] = -0.05
+        score -= 0.05
+        reasons.append("Too little evidence (-0.05)")
 
     legal = (submitted_finding.get("legal_basis") or "").lower()
     if "3729" in legal or "false claims act" in legal:
@@ -221,10 +311,10 @@ def grade_task3(submitted_finding, evidence_cited, steps_used, max_steps):
     }
     false_ev = ev_set - valid_ids
     if not false_ev:
-        breakdown["no_hallucination"] = 0.20; score += 0.20
-        reasons.append("No hallucinated evidence (+0.20)")
+        breakdown["no_hallucination"] = 0.15; score += 0.15
+        reasons.append("No hallucinated evidence (+0.15)")
     else:
-        p = min(0.20, len(false_ev) * 0.05)
+        p = min(0.30, len(false_ev) * 0.10)
         breakdown["hallucination_penalty"] = -p; score -= p
         reasons.append(f"Hallucinated docs (-{p:.2f})")
 
@@ -232,6 +322,15 @@ def grade_task3(submitted_finding, evidence_cited, steps_used, max_steps):
     if any(k in reasoning for k in ["upcode", "upcoding", "k0831"]):
         breakdown["scheme_bonus"] = 0.05; score += 0.05
         reasons.append("Scheme identified (+0.05)")
+
+    if any(v == -0.10 for v in breakdown.values()) or any(v == -0.05 for v in breakdown.values()):
+        breakdown["weak_submission_penalty"] = -0.05
+        score -= 0.05
+
+    if not submitted_finding.get("defendant"):
+        breakdown["missing_defendant"] = -0.05
+        score -= 0.05
+        reasons.append("Missing defendant (-0.05)")
 
     return Reward(
         value=round(max(0.0, min(1.0, score)), 4),

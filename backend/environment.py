@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import json
+import random
 from typing import Any, Dict, List, Optional, Tuple
 
 from models import Action, Observation, Reward, DocumentSummary, FraudSignal
@@ -15,6 +16,7 @@ from data.documents import (
     TASK2_DOCUMENTS,
     TASK3_DOCUMENTS,
 )
+from data.dynamic_dataset import generate_dynamic_documents
 from tasks.graders import (
     TASKS,
     grade_task1,
@@ -92,12 +94,20 @@ class GovFraudEnv:
         ],
     }
 
-    def __init__(self, task_id: str = "duplicate_billing"):
+    def __init__(
+        self,
+        task_id: str = "duplicate_billing",
+        dynamic_data: bool = False,
+        seed: Optional[int] = None,
+    ):
         if task_id not in TASKS:
             raise ValueError(f"Unknown task_id '{task_id}'. Choose from: {list(TASKS.keys())}")
         self.task_id = task_id
+        self.dynamic_data = dynamic_data
+        self.seed = seed
+        self._episode_counter = 0
         self._task_meta = TASKS[task_id]
-        self._documents = self.TASK_DOCUMENTS[task_id]
+        self._documents = copy.deepcopy(self.TASK_DOCUMENTS[task_id])
         self._obs: Optional[Observation] = None
         self._state: Dict[str, Any] = {}
         self._reset_state()
@@ -108,6 +118,8 @@ class GovFraudEnv:
 
     def reset(self) -> Observation:
         """Start a fresh episode. Returns the initial observation."""
+        self._episode_counter += 1
+        self._documents = self._build_documents_for_episode()
         self._reset_state()
         self._obs = self._build_observation()
         return self._obs
@@ -426,7 +438,6 @@ class GovFraudEnv:
     def _document_relevance(self, doc_id: str) -> float:
         """Relevance score [0,1] for a document to the current task's ground truth."""
         if self.task_id == "duplicate_billing":
-            from data.documents import TASK1_GROUND_TRUTH as gt
             key_ids = {"CLAIM-001", "CLAIM-002", "CLAIM-004"}
             return 1.0 if doc_id in key_ids else 0.3
         elif self.task_id == "shell_company":
@@ -437,3 +448,15 @@ class GovFraudEnv:
             from data.documents import TASK3_GROUND_TRUTH as gt
             key_ids = set(gt["key_evidence"])
             return 1.0 if doc_id in key_ids else 0.4
+
+    def _build_documents_for_episode(self) -> Dict[str, Dict[str, Any]]:
+        """Build the document bundle for this episode (static or dynamic)."""
+        if not self.dynamic_data:
+            return copy.deepcopy(self.TASK_DOCUMENTS[self.task_id])
+
+        if self.seed is None:
+            episode_seed = random.randint(1, 10**9)
+        else:
+            episode_seed = self.seed + self._episode_counter
+
+        return generate_dynamic_documents(task_id=self.task_id, seed=episode_seed)

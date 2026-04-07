@@ -52,6 +52,8 @@ def _get_env(session_id: str = "default") -> GovFraudEnv:
 class ResetRequest(BaseModel):
     task_id: str = "duplicate_billing"
     session_id: str = "default"
+    dynamic_data: bool = False
+    seed: Optional[int] = None
 
 
 class StepRequest(BaseModel):
@@ -99,7 +101,7 @@ def reset(req: ResetRequest) -> Dict[str, Any]:
             status_code=400,
             detail=f"Invalid task_id. Choose from: {valid_tasks}"
         )
-    env = GovFraudEnv(task_id=req.task_id)
+    env = GovFraudEnv(task_id=req.task_id, dynamic_data=req.dynamic_data, seed=req.seed)
     _envs[req.session_id] = env
     obs = env.reset()
     return obs.model_dump()
@@ -134,11 +136,11 @@ def state(session_id: str = "default") -> Dict[str, Any]:
 
 
 @app.get("/validate")
-def validate():
+def validate(dynamic_data: bool = False):
     """OpenEnv spec validation endpoint."""
     results = {}
     for task_id in ["duplicate_billing", "shell_company", "fca_complaint"]:
-        env = GovFraudEnv(task_id=task_id)
+        env = GovFraudEnv(task_id=task_id, dynamic_data=dynamic_data)
         obs = env.reset()
         assert obs.task_id == task_id
         action = Action(action_type="read_document", document_id=obs.available_documents[0].doc_id)

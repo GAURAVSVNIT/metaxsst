@@ -156,7 +156,7 @@ def parse_action(raw: str) -> Optional[Dict[str, Any]]:
 # Environment interaction (via HTTP to local server, or direct import)
 # ---------------------------------------------------------------------------
 
-def run_episode_direct(task_id: str, client: OpenAI) -> Dict[str, Any]:
+def run_episode_direct(task_id: str, client: OpenAI, dynamic_data: bool = False) -> Dict[str, Any]:
     """
     Run one episode directly importing the environment (no HTTP server needed).
     This is the primary mode for the baseline script.
@@ -164,7 +164,7 @@ def run_episode_direct(task_id: str, client: OpenAI) -> Dict[str, Any]:
     from environment import GovFraudEnv
     from models import Action
 
-    env = GovFraudEnv(task_id=task_id)
+    env = GovFraudEnv(task_id=task_id, dynamic_data=dynamic_data)
     obs = env.reset()
 
     rewards: List[float] = []
@@ -309,6 +309,11 @@ def main():
         default="all",
         help="Which task(s) to run",
     )
+    parser.add_argument(
+        "--dynamic-data",
+        action="store_true",
+        help="Run against dynamic per-episode datasets",
+    )
     args = parser.parse_args()
 
     client = make_client()
@@ -319,7 +324,7 @@ def main():
         print(f"\n{'='*60}", flush=True)
         print(f"Running task: {task_id}", flush=True)
         print(f"{'='*60}", flush=True)
-        result = run_episode_direct(task_id, client)
+        result = run_episode_direct(task_id, client, dynamic_data=args.dynamic_data)
         all_results.append(result)
         time.sleep(1)  # Brief pause between tasks
 
