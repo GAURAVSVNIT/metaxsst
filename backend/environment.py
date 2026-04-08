@@ -108,6 +108,7 @@ class GovFraudEnv:
         self._episode_counter = 0
         self._task_meta = TASKS[task_id]
         self._documents = copy.deepcopy(self.TASK_DOCUMENTS[task_id])
+        self._hidden_documents: Dict[str, Dict[str, Any]] = {}
         self._obs: Optional[Observation] = None
         self._state: Dict[str, Any] = {}
         self._reset_state()
@@ -120,6 +121,7 @@ class GovFraudEnv:
         """Start a fresh episode. Returns the initial observation."""
         self._episode_counter += 1
         self._documents = self._build_documents_for_episode()
+        self._hidden_documents = self._build_hidden_documents_for_episode()
         self._reset_state()
         self._obs = self._build_observation()
         return self._obs
@@ -212,8 +214,7 @@ class GovFraudEnv:
             return self._action_submit_finding(action)
 
         elif action.action_type == "request_more_docs":
-            return Reward(value=0.0, reason="No additional documents available for this task"), \
-                   "No additional documents available", None
+            return self._action_request_more_docs(action)
 
         else:
             return Reward(value=0.0, reason="Unknown action type"), \
@@ -237,12 +238,26 @@ class GovFraudEnv:
         # Small reward for reading a relevant document (first time only)
         relevance = self._document_relevance(doc_id)
         if already_read:
-            r = Reward(value=0.0, reason=f"Already read {doc_id}")
-        else:
+            self._state["cumulative_reward"] = max(
+                0.0, self._state["cumulative_reward"] - 0.005
+            )
             r = Reward(
-                value=round(relevance * 0.03, 4),
-                breakdown={"document_read": relevance * 0.03},
-                reason=f"Read document {doc_id} (relevance={relevance:.1f})",
+                value=0.0,
+                breakdown={"repeat_read_penalty": -0.005},
+                reason=f"Already read {doc_id}",
+                is_penalty=True,
+            )
+        else:
+            # Investigation budget: reading always has a small cost.
+            read_cost = 0.01
+            net_read_reward = max(0.0, round(relevance * 0.03 - read_cost, 4))
+            r = Reward(
+                value=net_read_reward,
+                breakdown={
+                    "document_read": round(relevance * 0.03, 4),
+                    "read_cost": -read_cost,
+                },
+                reason=f"Read document {doc_id} (relevance={relevance:.1f}, budget cost applied)",
             )
         return r, f"Document '{doc_id}' loaded successfully", None
 
@@ -364,6 +379,69 @@ class GovFraudEnv:
         self._state["final_score"] = reward.value
         return reward, f"Finding submitted. Final score: {reward.value:.4f}", None
 
+    def _action_request_more_docs(self, action: Action) -> Tuple[Reward, str, Optional[str]]:
+        """
+        Reveal one hidden supporting document when the request is specific and timely.
+
+        This action is optional and designed to support evidence quality, not replace
+        core fraud detection performance.
+        """
+        if not self._hidden_documents:
+            return Reward(value=0.0, reason="No additional documents available for this task"), \
+                   "No additional documents available", None
+
+        docs_read = len(self._state["read_documents"])
+        if docs_read < 2:
+            self._state["cumulative_reward"] = max(0.0, self._state["cumulative_reward"] - 0.03)
+            return Reward(
+                value=0.0,
+                breakdown={"premature_request_penalty": -0.03},
+                reason="Requested more docs too early",
+                is_penalty=True,
+            ), "Request denied: read at least 2 documents first", None
+
+        query_parts = [
+            action.request_target or "",
+            action.requested_doc_type or "",
+            action.reasoning or "",
+            " ".join(action.entity_ids or []),
+        ]
+        query = " ".join(part.strip().lower() for part in query_parts if part)
+        if not query:
+            return Reward(value=0.0, reason="Missing request target"), \
+                   "Request needs a target or requested_doc_type", "Provide request_target or requested_doc_type"
+
+        best_doc_id: Optional[str] = None
+        best_score = -1
+        for doc_id, doc in self._hidden_documents.items():
+            hints = [h.lower() for h in doc.get("request_hints", [])]
+            score = sum(1 for hint in hints if hint in query)
+            if score > best_score:
+                best_score = score
+                best_doc_id = doc_id
+
+        if best_doc_id is None or best_score <= 0:
+            self._state["cumulative_reward"] = max(0.0, self._state["cumulative_reward"] - 0.02)
+            return Reward(
+                value=0.0,
+                breakdown={"bad_request_penalty": -0.02},
+                reason="Request was too vague or irrelevant",
+                is_penalty=True,
+            ), "Request denied: target not specific enough", None
+
+        revealed_doc = self._hidden_documents.pop(best_doc_id)
+        # Keep request hints internal; they are not part of the observable corpus.
+        revealed_doc.pop("request_hints", None)
+        self._documents[best_doc_id] = revealed_doc
+        self._state["requested_docs"].append(best_doc_id)
+
+        return Reward(
+            value=0.03,
+            breakdown={"targeted_request_bonus": 0.03},
+            reason=f"Additional supporting document released: {best_doc_id}",
+            is_bonus=True,
+        ), f"Additional document released: {best_doc_id}", None
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -381,6 +459,7 @@ class GovFraudEnv:
             "traced_hops": set(),
             "submitted_finding": None,
             "final_score": None,
+            "requested_docs": [],
             "last_actions": [],
         }
 
@@ -420,6 +499,8 @@ class GovFraudEnv:
                 "flagged_pairs": [list(p) for p in self._state["flagged_pairs"]],
                 "traced_hops": [list(h) for h in self._state["traced_hops"]],
                 "flagged_entities": list(self._state["flagged_entities"]),
+                "requested_docs": list(self._state.get("requested_docs", [])),
+                "hidden_docs_remaining": len(self._hidden_documents),
                 "final_score": self._state.get("final_score"),
             },
         )
@@ -433,6 +514,7 @@ class GovFraudEnv:
             "final_score": self._state.get("final_score"),
             "steps_taken": self._state["steps_taken"],
             "cumulative_reward": self._state["cumulative_reward"],
+            "docs_requested": list(self._state.get("requested_docs", [])),
         }
 
     def _document_relevance(self, doc_id: str) -> float:
@@ -460,3 +542,50 @@ class GovFraudEnv:
             episode_seed = self.seed + self._episode_counter
 
         return generate_dynamic_documents(task_id=self.task_id, seed=episode_seed)
+
+    def _build_hidden_documents_for_episode(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Build optional supporting documents that can be unlocked via request_more_docs.
+
+        These documents are corroborative, not mandatory for success.
+        """
+        if self.task_id == "duplicate_billing":
+            return {
+                "AUDIT-MEMO-001": {
+                    "doc_type": "audit_memo",
+                    "title": "Internal Audit Memo — Duplicate Claim Pattern",
+                    "preview": "Auditor notes repeated claim attributes for PRV-8821 and patient P4421",
+                    "content": {
+                        "summary": "Claims appear duplicated with matching patient/provider/procedure signatures.",
+                        "focus_claims": ["CLAIM-001", "CLAIM-002", "CLAIM-004"],
+                    },
+                    "request_hints": ["audit", "duplicate", "provider", "claim", "prv-8821"],
+                }
+            }
+
+        if self.task_id == "shell_company":
+            return {
+                "BANK-LEDGER-001": {
+                    "doc_type": "bank_records",
+                    "title": "Bank Ledger Extract — FastBuild Settlement Account",
+                    "preview": "Wire transfers from contract payouts routed to trust-managed account",
+                    "content": {
+                        "summary": "Federal contract funds were moved through ConstructPro-linked accounts.",
+                        "entities": ["FastBuild LLC", "ConstructPro Inc", "R. Holden Family Trust"],
+                    },
+                    "request_hints": ["bank", "wire", "ledger", "fastbuild", "constructpro", "trust"],
+                }
+            }
+
+        return {
+            "COMPLIANCE-REVIEW-001": {
+                "doc_type": "compliance_review",
+                "title": "Clinical Compliance Review — K0831 Medical Necessity",
+                "preview": "Reviewer found broad mismatch between billed coding level and supporting orders",
+                "content": {
+                    "summary": "A significant portion of sampled claims lacked support for K0831 billing level.",
+                    "focus_docs": ["CMS-CLAIM-BATCH-001", "PHYSICIAN-ORDERS-001"],
+                },
+                "request_hints": ["compliance", "medical necessity", "k0831", "orders", "review"],
+            }
+        }

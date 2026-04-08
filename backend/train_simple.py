@@ -129,9 +129,18 @@ class ExpertPolicy:
     def solve_duplicate_billing(env: GovFraudEnv) -> List[Dict[str, Any]]:
         """Demonstration policy for the duplicate billing task."""
         actions: List[Dict[str, Any]] = []
-        obs = env.reset()
+        obs = env._obs if env._obs is not None else env.reset()
         key_docs = [doc.doc_id for doc in obs.available_documents if doc.doc_id in {"CLAIM-001", "CLAIM-002", "CLAIM-003", "CLAIM-004"}]
         actions.extend(ExpertPolicy._read_actions(key_docs[:3], "duplicate billing pattern"))
+        actions.append({
+            "thought": "Requesting an audit memo to strengthen evidence citations",
+            "action": {
+                "action_type": "request_more_docs",
+                "request_target": "duplicate billing audit memo for PRV-8821",
+                "requested_doc_type": "audit_memo",
+                "reasoning": "Need corroborating audit narrative before final submission",
+            },
+        })
         actions.append({
             "thought": "Found exact duplicates with same patient, date, amount, and provider",
             "action": {
@@ -166,7 +175,7 @@ class ExpertPolicy:
     def solve_shell_company(env: GovFraudEnv) -> List[Dict[str, Any]]:
         """Demonstration policy for the shell company task."""
         actions: List[Dict[str, Any]] = []
-        obs = env.reset()
+        obs = env._obs if env._obs is not None else env.reset()
         key_docs = [
             "CONTRACT-001",
             "CONTRACT-002",
@@ -177,6 +186,15 @@ class ExpertPolicy:
         ]
         present_docs = {doc.doc_id for doc in obs.available_documents}
         actions.extend(ExpertPolicy._read_actions([doc_id for doc_id in key_docs if doc_id in present_docs], "ownership and conflict tracing"))
+        actions.append({
+            "thought": "Requesting bank records to corroborate ownership-linked fund flow",
+            "action": {
+                "action_type": "request_more_docs",
+                "request_target": "FastBuild LLC bank records",
+                "requested_doc_type": "bank_records",
+                "reasoning": "Need corroboration that contract payouts followed the traced chain",
+            },
+        })
         actions.extend([
             {
                 "thought": "Tracing FastBuild LLC to its direct owner",
@@ -229,7 +247,7 @@ class ExpertPolicy:
     def solve_fca_complaint(env: GovFraudEnv) -> List[Dict[str, Any]]:
         """Demonstration policy for the FCA complaint task."""
         actions: List[Dict[str, Any]] = []
-        obs = env.reset()
+        obs = env._obs if env._obs is not None else env.reset()
         key_docs = [
             "ANON-TIP-001",
             "CMS-CLAIM-BATCH-001",
@@ -243,6 +261,15 @@ class ExpertPolicy:
         present_docs = {doc.doc_id for doc in obs.available_documents}
         actions.extend(ExpertPolicy._read_actions([doc_id for doc_id in key_docs if doc_id in present_docs], "False Claims Act scheme"))
         actions.extend([
+            {
+                "thought": "Requesting a compliance review to support medical-necessity claims evidence",
+                "action": {
+                    "action_type": "request_more_docs",
+                    "request_target": "K0831 medical necessity compliance review",
+                    "requested_doc_type": "compliance_review",
+                    "reasoning": "Need corroborating compliance findings before filing",
+                },
+            },
             {
                 "thought": "Flagging the provider for systemic overbilling and upcoding",
                 "action": {
@@ -295,11 +322,13 @@ def collect_training_data(
     env = GovFraudEnv(task_id=task_id, dynamic_data=dynamic_data)
     
     for episode in range(num_episodes):
+        # Reset first so planning and execution happen on the same episode.
+        obs = env.reset()
+
         # Get expert actions
         expert_actions = ExpertPolicy.solve(env)
-        
+
         # Run episode and collect data
-        obs = env.reset()
         episode_data = {
             "episode": episode,
             "task_id": task_id,

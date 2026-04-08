@@ -69,54 +69,94 @@ def _random_action(task_id: str, obs, rng: random.Random) -> Action:
     docs = [d.doc_id for d in obs.available_documents]
     if task_id == "duplicate_billing":
         choice = rng.random()
-        if choice < 0.45:
+        if choice < 0.35:
             return Action(action_type="read_document", document_id=rng.choice(docs))
-        if choice < 0.80:
-            a, b = rng.sample(docs, 2)
+        if choice < 0.78:
+            # Weak heuristic: occasionally test known likely duplicate pairs.
+            candidate_pairs = [
+                ("CLAIM-001", "CLAIM-002"),
+                ("CLAIM-001", "CLAIM-004"),
+            ]
+            if rng.random() < 0.35 and all(pair_id in docs for pair_id in candidate_pairs[0]):
+                a, b = rng.choice(candidate_pairs)
+            else:
+                a, b = rng.sample(docs, 2)
             return Action(action_type="flag_duplicate", entity_ids=[a, b], reasoning="random baseline")
+        evidence_candidates = [doc_id for doc_id in ["CLAIM-001", "CLAIM-002", "CLAIM-004"] if doc_id in docs]
+        if rng.random() < 0.30 and len(evidence_candidates) >= 2:
+            evidence = evidence_candidates[:3]
+        else:
+            evidence = rng.sample(docs, k=min(2, len(docs)))
         return Action(
             action_type="submit_finding",
             finding_type=rng.choice(["duplicate_billing", "clean"]),
             defendant="Unknown",
             amount_at_risk=rng.uniform(0, 1000),
             legal_basis="31 U.S.C. §3729",
-            evidence=rng.sample(docs, k=min(2, len(docs))),
+            evidence=evidence,
             reasoning="random baseline",
         )
 
     if task_id == "shell_company":
         choice = rng.random()
-        if choice < 0.40:
+        if choice < 0.36:
             return Action(action_type="read_document", document_id=rng.choice(docs))
-        if choice < 0.75:
-            a = rng.choice(["FastBuild LLC", "ConstructPro Inc", "R. Holden Family Trust", "James Williams", "Patricia Holden-Williams"])
-            b = rng.choice(["ConstructPro Inc", "R. Holden Family Trust", "Derek Williams / Patricia Holden-Williams"])
+        if choice < 0.76:
+            # Weak heuristic: sometimes choose true ownership hops.
+            true_hops = [
+                ("FastBuild LLC", "ConstructPro Inc"),
+                ("ConstructPro Inc", "R. Holden Family Trust"),
+                ("R. Holden Family Trust", "Derek Williams / Patricia Holden-Williams"),
+            ]
+            if rng.random() < 0.30:
+                a, b = rng.choice(true_hops)
+            else:
+                a = rng.choice(["FastBuild LLC", "ConstructPro Inc", "R. Holden Family Trust", "James Williams", "Patricia Holden-Williams"])
+                b = rng.choice(["ConstructPro Inc", "R. Holden Family Trust", "Derek Williams / Patricia Holden-Williams"])
             return Action(action_type="trace_ownership", entity_ids=[a, b], reasoning="random baseline")
         if choice < 0.90:
             return Action(action_type="flag_shell_company", entity_ids=["FastBuild LLC"], reasoning="random baseline")
+        evidence_candidates = [
+            doc_id
+            for doc_id in ["STATE-FILING-DE-001", "STATE-FILING-NV-001", "TRUST-DOC-001", "GOV-EMPLOYEE-001"]
+            if doc_id in docs
+        ]
+        if rng.random() < 0.25 and len(evidence_candidates) >= 3:
+            evidence = evidence_candidates[:4]
+        else:
+            evidence = rng.sample(docs, k=min(3, len(docs)))
         return Action(
             action_type="submit_finding",
             finding_type="shell_company",
             defendant="FastBuild LLC",
             amount_at_risk=rng.uniform(0, 5_000_000),
             legal_basis="31 U.S.C. §3729",
-            evidence=rng.sample(docs, k=min(3, len(docs))),
+            evidence=evidence,
             reasoning="random baseline",
         )
 
     choice = rng.random()
-    if choice < 0.45:
+    if choice < 0.40:
         return Action(action_type="read_document", document_id=rng.choice(docs))
-    if choice < 0.75:
+    if choice < 0.73:
         return Action(action_type="flag_overbilling", entity_ids=["MediSupply Corp"], reasoning="random baseline")
     if choice < 0.92:
+        evidence_candidates = [
+            doc_id
+            for doc_id in ["CMS-CLAIM-BATCH-001", "PHYSICIAN-ORDERS-001", "EXPERT-ANALYSIS-001", "INTERNAL-EMAIL-001"]
+            if doc_id in docs
+        ]
+        if rng.random() < 0.30 and len(evidence_candidates) >= 3:
+            evidence = evidence_candidates[:4]
+        else:
+            evidence = rng.sample(docs, k=min(4, len(docs)))
         return Action(
             action_type="submit_finding",
             finding_type=rng.choice(["fca_violation", "overbilling", "clean"]),
             defendant=rng.choice(["MediSupply Corp", "Poole", "Unknown"]),
             amount_at_risk=rng.uniform(0, 15_000_000),
             legal_basis=rng.choice(["31 U.S.C. §3729", "False Claims Act"]),
-            evidence=rng.sample(docs, k=min(4, len(docs))),
+            evidence=evidence,
             reasoning="random baseline",
         )
     return Action(action_type="trace_ownership", entity_ids=["MediSupply Corp", "Unknown"], reasoning="random baseline")

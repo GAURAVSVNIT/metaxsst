@@ -2,6 +2,7 @@
 Task definitions and deterministic graders for all 3 fraud detection tasks.
 """
 from __future__ import annotations
+import re
 from typing import Any, Dict, List, Optional, Tuple
 from models import Reward
 from data.documents import (
@@ -50,6 +51,33 @@ TASKS = {
 }
 
 
+def _norm_text(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _norm_doc_id(value: Any) -> str:
+    return re.sub(r"[^A-Z0-9]+", "", str(value or "").upper())
+
+
+def _alias_match(value: Any, aliases: List[str]) -> bool:
+    nv = _norm_text(value)
+    if not nv:
+        return False
+    return any(_norm_text(alias) in nv or nv in _norm_text(alias) for alias in aliases if alias)
+
+
+def _doc_in_evidence(evidence: List[str], target_doc_id: str) -> bool:
+    target = _norm_doc_id(target_doc_id)
+    return any(_norm_doc_id(doc_id) == target for doc_id in evidence)
+
+
+def _doc_overlap_score(evidence: List[str], target_ids: List[str]) -> Tuple[set, int]:
+    norm_targets = {_norm_doc_id(doc_id) for doc_id in target_ids}
+    norm_evidence = {_norm_doc_id(doc_id) for doc_id in evidence}
+    overlap = norm_evidence & norm_targets
+    return overlap, len(overlap)
+
+
 def grade_task1(flagged_pairs, false_positive_ids, submitted_finding, steps_used, max_steps):
     gt = TASK1_GROUND_TRUTH
     score = 0.0
@@ -95,7 +123,9 @@ def grade_task1(flagged_pairs, false_positive_ids, submitted_finding, steps_used
             score -= 0.05
             reasons.append("Wrong finding type (-0.05)")
         evidence = submitted_finding.get("evidence") or []
-        if "CLAIM-001" in evidence and "CLAIM-002" in evidence and len(evidence) >= 2:
+        has_claim_001 = _doc_in_evidence(evidence, "CLAIM-001")
+        has_claim_002 = _doc_in_evidence(evidence, "CLAIM-002")
+        if has_claim_001 and has_claim_002 and len(evidence) >= 2:
             breakdown["evidence_quality"] = 0.10
             score += 0.10
             reasons.append("Correct evidence cited (+0.10)")
@@ -144,10 +174,27 @@ def grade_task2(ownership_hops_found, conflict_flagged, conflicted_person, submi
     hop_weights = [0.20, 0.25, 0.25]
     gt_hops = gt["ownership_chain"]
 
+    entity_aliases = {
+        "FastBuild LLC": ["FastBuild LLC", "FastBuild", "FastBuild Group", "FastBuild Holdings"],
+        "ConstructPro Inc": ["ConstructPro Inc", "ConstructPro", "Construct Pro"],
+        "R. Holden Family Trust": ["R. Holden Family Trust", "Holden Family Trust", "R Holden Trust"],
+        "Derek Williams / Patricia Holden-Williams": [
+            "Derek Williams / Patricia Holden-Williams",
+            "Patricia Holden-Williams",
+            "Patricia Holden Williams",
+            "Derek Williams",
+            "Holden-Williams",
+        ],
+    }
+
+    def _entity_match(found_value: str, gt_value: str) -> bool:
+        aliases = entity_aliases.get(gt_value, [gt_value])
+        return _alias_match(found_value, aliases)
+
     def hops_match(found, gt_hop):
-        f0 = (found[0] or "").lower(); f1 = (found[1] or "").lower()
-        g0 = gt_hop[0].lower(); g1 = gt_hop[1].lower()
-        return (g0 in f0 or f0 in g0) and (g1 in f1 or f1 in g1)
+        f0 = found[0] if len(found) > 0 else ""
+        f1 = found[1] if len(found) > 1 else ""
+        return _entity_match(f0, gt_hop[0]) and _entity_match(f1, gt_hop[1])
 
     for i, (gt_hop, weight) in enumerate(zip(gt_hops, hop_weights)):
         for fh in ownership_hops_found:
@@ -164,8 +211,8 @@ def grade_task2(ownership_hops_found, conflict_flagged, conflicted_person, submi
         breakdown["conflict_flagged"] = 0.10
         score += 0.10
         reasons.append("Conflict of interest flagged (+0.10)")
-        cp = (conflicted_person or "").lower()
-        if any(k in cp for k in ["williams", "patricia", "holden"]):
+        cp = conflicted_person or ""
+        if _alias_match(cp, ["williams", "patricia", "holden", "holden-williams"]):
             breakdown["correct_person"] = 0.10
             score += 0.10
             reasons.append("Correct conflicted person (+0.10)")
@@ -187,18 +234,26 @@ def grade_task2(ownership_hops_found, conflict_flagged, conflicted_person, submi
         else:
             breakdown["finding_type"] = -0.05; score -= 0.05
         amount = submitted_finding.get("amount_at_risk") or 0
-        if amount and abs(amount - gt["total_amount_at_risk"]) / gt["total_amount_at_risk"] < 0.15:
-            breakdown["correct_amount"] = 0.05; score += 0.05
-            reasons.append("Amount correct (+0.05)")
-        elif amount:
-            breakdown["correct_amount"] = -0.05; score -= 0.05
-            reasons.append("Amount off target (-0.05)")
+        if amount:
+            rel_err = abs(amount - gt["total_amount_at_risk"]) / gt["total_amount_at_risk"]
+            if rel_err < 0.15:
+                breakdown["correct_amount"] = 0.04; score += 0.04
+                reasons.append("Amount in tight range (+0.04)")
+            elif rel_err < 0.30:
+                breakdown["correct_amount"] = 0.02; score += 0.02
+                reasons.append("Amount in broad range (+0.02)")
+            elif rel_err < 0.50:
+                breakdown["correct_amount"] = 0.0
+                reasons.append("Amount weak but plausible (+0.00)")
+            else:
+                breakdown["correct_amount"] = -0.03; score -= 0.03
+                reasons.append("Amount far off (-0.03)")
         else:
             breakdown["correct_amount"] = -0.03; score -= 0.03
             reasons.append("Missing amount (-0.03)")
         ev = set(submitted_finding.get("evidence") or [])
-        overlap = ev & set(gt["key_evidence"])
-        ev_score = min(0.15, len(overlap) * 0.05)
+        overlap, overlap_count = _doc_overlap_score(list(ev), list(gt["key_evidence"]))
+        ev_score = min(0.20, overlap_count * 0.06)
         breakdown["evidence"] = ev_score; score += ev_score
         if overlap:
             reasons.append(f"{len(overlap)} key docs cited (+{ev_score:.2f})")
@@ -235,10 +290,10 @@ def grade_task3(submitted_finding, evidence_cited, steps_used, max_steps):
         return Reward(value=0.0, breakdown={}, reason="No finding submitted", is_penalty=True)
 
     defendant = (submitted_finding.get("defendant") or "").lower()
-    if "medisupply" in defendant or "medi supply" in defendant:
+    if _alias_match(defendant, ["MediSupply Corp", "Medi Supply Corp", "MediSupply"]):
         breakdown["defendant"] = 0.25; score += 0.25
         reasons.append("Correct defendant (+0.25)")
-    elif any(k in defendant for k in ["poole", "sloane"]):
+    elif _alias_match(defendant, ["poole", "sloane"]):
         breakdown["defendant"] = 0.03; score += 0.03
         reasons.append("Individual defendant (partial) (+0.03)")
     elif defendant:
@@ -257,29 +312,33 @@ def grade_task3(submitted_finding, evidence_cited, steps_used, max_steps):
 
     amount = submitted_finding.get("amount_at_risk") or 0
     if amount and gt["amount_at_risk_min"] <= amount <= gt["amount_at_risk_max"]:
-        breakdown["amount"] = 0.15; score += 0.15
-        reasons.append(f"Amount ${amount:,.0f} in range (+0.15)")
+        breakdown["amount"] = 0.10; score += 0.10
+        reasons.append(f"Amount ${amount:,.0f} in range (+0.10)")
     elif amount:
         mid = (gt["amount_at_risk_min"] + gt["amount_at_risk_max"]) / 2
-        if abs(amount - mid) / mid < 0.30:
-            breakdown["amount"] = 0.04; score += 0.04
-            reasons.append("Amount roughly correct (+0.04)")
+        rel_err = abs(amount - mid) / mid
+        if rel_err < 0.30:
+            breakdown["amount"] = 0.06; score += 0.06
+            reasons.append("Amount in broad range (+0.06)")
+        elif rel_err < 0.50:
+            breakdown["amount"] = 0.02; score += 0.02
+            reasons.append("Amount weak but plausible (+0.02)")
         else:
-            breakdown["amount"] = -0.05
-            score -= 0.05
-            reasons.append("Wrong amount range (-0.05)")
+            breakdown["amount"] = -0.03
+            score -= 0.03
+            reasons.append("Wrong amount range (-0.03)")
     else:
         breakdown["amount"] = -0.03
         score -= 0.03
         reasons.append("Missing amount (-0.03)")
 
     ev_set = set(evidence_cited)
-    overlap = ev_set & set(gt["key_evidence"])
-    if len(overlap) >= 3:
-        ev_score = 0.25
-    elif len(overlap) == 2:
-        ev_score = 0.12
-    elif len(overlap) == 1:
+    overlap, overlap_count = _doc_overlap_score(list(ev_set), list(gt["key_evidence"]))
+    if overlap_count >= 3:
+        ev_score = 0.30
+    elif overlap_count == 2:
+        ev_score = 0.16
+    elif overlap_count == 1:
         ev_score = 0.04
     else:
         ev_score = 0.0
@@ -309,7 +368,7 @@ def grade_task3(submitted_finding, evidence_cited, steps_used, max_steps):
         "CORPORATE-FILING-001","REIMBURSEMENT-POLICY-001",
         "FINANCIAL-RECORDS-001","EXPERT-ANALYSIS-001",
     }
-    false_ev = ev_set - valid_ids
+    false_ev = {_norm_doc_id(doc_id) for doc_id in ev_set} - {_norm_doc_id(doc_id) for doc_id in valid_ids}
     if not false_ev:
         breakdown["no_hallucination"] = 0.15; score += 0.15
         reasons.append("No hallucinated evidence (+0.15)")

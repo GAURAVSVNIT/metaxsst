@@ -39,6 +39,14 @@ class Action(BaseModel):
     amount_at_risk: Optional[float] = Field(None, description="Estimated dollar amount at risk")
     legal_basis: Optional[str] = Field(None, description="Legal statute cited e.g. 31 U.S.C. §3729")
     reasoning: Optional[str] = Field(None, description="Agent's reasoning text")
+    request_target: Optional[str] = Field(
+        None,
+        description="Target entity/topic when requesting more docs (e.g., 'FastBuild LLC bank records')",
+    )
+    requested_doc_type: Optional[str] = Field(
+        None,
+        description="Requested document type (e.g., bank_records, audit_memo, compliance_review)",
+    )
 
     class Config:
         extra = "allow"
