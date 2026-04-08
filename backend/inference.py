@@ -67,7 +67,10 @@ AVAILABLE ACTIONS (respond with exactly one JSON action per turn):
 5. Flag overbilling (Task 3):
 {"action_type": "flag_overbilling", "entity_ids": ["MediSupply Corp"], "reasoning": "7x industry average K0831 claims"}
 
-6. Submit final finding:
+6. Request additional supporting docs (optional):
+{"action_type": "request_more_docs", "request_target": "FastBuild LLC bank records", "requested_doc_type": "bank_records", "reasoning": "Need corroboration for ownership-linked fund flow"}
+
+7. Submit final finding:
 {"action_type": "submit_finding",
  "finding_type": "duplicate_billing|shell_company|overbilling|fca_violation|clean",
  "defendant": "<name>",
@@ -77,11 +80,22 @@ AVAILABLE ACTIONS (respond with exactly one JSON action per turn):
  "reasoning": "<your reasoning>"}
 
 STRATEGY:
+- You are working under a strict investigation budget
+- You have limited steps; avoid brute-force reading
+- Some documents are irrelevant noise and should be ignored unless needed
+- Each unnecessary read_document action hurts final efficiency
 - First read the pre-flagged signals carefully
 - Read the most suspicious documents first
+- Use request_more_docs only if evidence is still insufficient after initial review
 - Build evidence before submitting
 - Be precise — false positives are penalized
 - Always submit a finding before running out of steps
+
+SHELL COMPANY CHECKLIST (Task 2):
+- Before submit_finding, complete at least 2 trace_ownership hops
+- Include conflict-of-interest context in reasoning (Williams/Holden relation)
+- Cite at least 3 evidence documents
+- If evidence is thin, use request_more_docs for bank_records before submitting
 
 Respond ONLY with valid JSON. No prose, no markdown, no explanation outside the JSON.
 """
@@ -156,7 +170,7 @@ def parse_action(raw: str) -> Optional[Dict[str, Any]]:
 # Environment interaction (via HTTP to local server, or direct import)
 # ---------------------------------------------------------------------------
 
-def run_episode_direct(task_id: str, client: OpenAI) -> Dict[str, Any]:
+def run_episode_direct(task_id: str, client: OpenAI, dynamic_data: bool = False) -> Dict[str, Any]:
     """
     Run one episode directly importing the environment (no HTTP server needed).
     This is the primary mode for the baseline script.
@@ -164,7 +178,7 @@ def run_episode_direct(task_id: str, client: OpenAI) -> Dict[str, Any]:
     from environment import GovFraudEnv
     from models import Action
 
-    env = GovFraudEnv(task_id=task_id)
+    env = GovFraudEnv(task_id=task_id, dynamic_data=dynamic_data)
     obs = env.reset()
 
     rewards: List[float] = []
@@ -215,6 +229,20 @@ def run_episode_direct(task_id: str, client: OpenAI) -> Dict[str, Any]:
             continue
 
         action_str = _action_to_str(action)
+
+        # Shell-company guardrail: discourage premature submission before
+        # tracing ownership and gathering sufficient evidence.
+        if task_id == "shell_company" and _is_shell_submit_too_early(action, obs):
+            guard_msg = (
+                "Submit blocked: incomplete shell-company investigation. "
+                "Trace ownership hops (>=2), include conflict reasoning, and cite >=3 evidence docs "
+                "before submit_finding."
+            )
+            log_step(step_num + 1, action_str, 0.0, False, guard_msg)
+            rewards.append(0.0)
+            step_num += 1
+            messages.append({"role": "user", "content": f"ERROR: {guard_msg}"})
+            continue
 
         # Execute step
         try:
@@ -297,6 +325,25 @@ def _action_to_str(action) -> str:
     return "(" + "|".join(parts) + ")"
 
 
+def _is_shell_submit_too_early(action, obs) -> bool:
+    if action.action_type != "submit_finding":
+        return False
+
+    traced_hops = obs.info.get("traced_hops") or []
+    evidence = action.evidence or []
+    reasoning = (action.reasoning or "").lower()
+
+    if len(traced_hops) < 2:
+        return True
+    if action.finding_type not in {"shell_company", "fca_violation"}:
+        return True
+    if len(evidence) < 3:
+        return True
+    if not any(token in reasoning for token in ["williams", "holden", "spouse", "conflict"]):
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -309,6 +356,11 @@ def main():
         default="all",
         help="Which task(s) to run",
     )
+    parser.add_argument(
+        "--dynamic-data",
+        action="store_true",
+        help="Run against dynamic per-episode datasets",
+    )
     args = parser.parse_args()
 
     client = make_client()
@@ -319,7 +371,7 @@ def main():
         print(f"\n{'='*60}", flush=True)
         print(f"Running task: {task_id}", flush=True)
         print(f"{'='*60}", flush=True)
-        result = run_episode_direct(task_id, client)
+        result = run_episode_direct(task_id, client, dynamic_data=args.dynamic_data)
         all_results.append(result)
         time.sleep(1)  # Brief pause between tasks
 

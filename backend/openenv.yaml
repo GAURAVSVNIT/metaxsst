@@ -106,7 +106,11 @@ actions:
       reasoning: string (optional)
 
   - name: request_more_docs
-    description: Request additional documents (always returns empty for these tasks)
+    description: Request one additional supporting document when evidence is insufficient
+    parameters:
+      request_target: string (optional but recommended)
+      requested_doc_type: string (optional)
+      reasoning: string (optional)
 
 # Observation space
 observation_fields:
