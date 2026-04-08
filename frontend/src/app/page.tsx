@@ -254,7 +254,7 @@ export default function SimulationPage() {
         </aside>
 
         {/* Center Canvas */}
-        <main className="flex-1 flex flex-col min-w-0 bg-[#0a0a0a] relative">
+        <main className={cn('flex-1 flex flex-col min-w-0 bg-[#0a0a0a] relative transition-all duration-300 ease-in-out', docId && 'mr-[560px]')}>
           
           {/* Tab Switcher */}
           <div className="flex items-center border-b border-white/10 px-8 bg-black shrink-0">
@@ -383,7 +383,7 @@ export default function SimulationPage() {
               <motion.div 
                 initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                 onClick={() => setDocId(null)}
-                className="absolute inset-0 bg-black/40 z-30 backdrop-blur-sm"
+                className="absolute inset-0 bg-black/10 z-30"
               />
               <motion.div
                 initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
