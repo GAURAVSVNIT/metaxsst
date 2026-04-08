@@ -6,6 +6,7 @@ LABEL org.opencontainers.image.version="1.0.0"
 LABEL space_sdk="docker"
 LABEL tags="openenv"
 
+USER root
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
@@ -13,18 +14,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install uv globally
+RUN pip install --no-cache-dir uv
 
-# Copy application code
-COPY models.py .
-COPY environment.py .
-COPY app.py .
-COPY inference.py .
-COPY openenv.yaml .
-COPY data/ ./data/
-COPY tasks/ ./tasks/
+# Install Python dependencies using uv as root
+COPY requirements.txt .
+RUN uv pip install --system --no-cache -r requirements.txt
+
+# Now create and switch to the non-root user required by HF
+RUN useradd -m -u 1000 user
+RUN chown -R user:user /app
+USER user
+ENV PATH="/home/user/.local/bin:$PATH"
+
+# Copy application code from backend directory (and inference from root)
+COPY --chown=user backend/models.py .
+COPY --chown=user backend/environment.py .
+COPY --chown=user backend/app.py .
+COPY --chown=user inference.py .
+COPY --chown=user backend/openenv.yaml .
+COPY --chown=user backend/data/ ./data/
+COPY --chown=user backend/tasks/ ./tasks/
 
 # Create __init__ files
 RUN touch data/__init__.py tasks/__init__.py
@@ -39,4 +49,4 @@ ENV PYTHONDONTWRITEBYTECODE=1
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:7860/health || exit 1
 
-CMD ["python", "app.py"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]

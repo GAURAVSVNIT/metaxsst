@@ -1,0 +1,160 @@
+name: gov-fraud-detection
+version: "1.0.0"
+description: >
+  Government Fraud Detection environment for AI agent training and evaluation.
+  Simulates real-world investigative workflows: Medicare duplicate billing detection,
+  shell company ownership tracing, and False Claims Act complaint construction.
+  Inspired by the "Infra for Government Fraud Hunters" problem space.
+
+tags:
+  - openenv
+  - fraud-detection
+  - government
+  - healthcare
+  - legal
+  - real-world
+
+author: "OpenEnv Hackathon Submission"
+license: MIT
+
+# OpenEnv spec compliance
+spec_version: "1.0"
+api:
+  reset: POST /reset
+  step: POST /step
+  state: GET /state
+  health: GET /health
+  validate: GET /validate
+
+tasks:
+  - id: duplicate_billing
+    name: Medicare Duplicate Billing Detection
+    difficulty: easy
+    max_steps: 8
+    description: >
+      Identify duplicate and near-duplicate Medicare claims in a batch of 10 records.
+      Ground truth contains 1 exact duplicate pair and 1 near-duplicate pair.
+      False positives are penalized.
+    reward_range: [0.0, 1.0]
+    grader: deterministic
+    success_threshold: 0.70
+
+  - id: shell_company
+    name: Shell Company Ownership Tracing
+    difficulty: medium
+    max_steps: 12
+    description: >
+      Trace the 3-hop ownership chain of FastBuild LLC to reveal a conflict of
+      interest with federal contracting officer James Williams. Each hop traced
+      earns partial reward. Total contract value at risk: $3.19M.
+    reward_range: [0.0, 1.0]
+    grader: deterministic
+    success_threshold: 0.60
+
+  - id: fca_complaint
+    name: False Claims Act Complaint Construction
+    difficulty: hard
+    max_steps: 15
+    description: >
+      Build a complete FCA complaint against MediSupply Corp for systematic
+      Medicare upcoding of durable medical equipment. Must identify defendants,
+      quantify amount at risk (~$8.2M), cite key evidence, and reference
+      31 U.S.C. §3729.
+    reward_range: [0.0, 1.0]
+    grader: deterministic
+    success_threshold: 0.50
+
+# Action space
+actions:
+  - name: read_document
+    description: Read the full content of a document by ID
+    parameters:
+      document_id: string (required)
+
+  - name: flag_duplicate
+    description: Flag two claims as duplicate billing
+    parameters:
+      entity_ids: list[string] (2 claim IDs, required)
+      reasoning: string (optional)
+
+  - name: flag_shell_company
+    description: Flag an entity as a potential shell company
+    parameters:
+      entity_ids: list[string] (required)
+      reasoning: string (optional)
+
+  - name: trace_ownership
+    description: Assert an ownership relationship between two entities
+    parameters:
+      entity_ids: list[string] ([child, parent], required)
+      reasoning: string (optional)
+
+  - name: flag_overbilling
+    description: Flag an entity for potential overbilling
+    parameters:
+      entity_ids: list[string] (required)
+      reasoning: string (optional)
+
+  - name: submit_finding
+    description: Submit the final fraud finding and trigger grading
+    parameters:
+      finding_type: string (duplicate_billing|shell_company|overbilling|fca_violation|clean)
+      defendant: string (optional)
+      amount_at_risk: float (optional)
+      legal_basis: string (optional)
+      evidence: list[string] (document IDs)
+      reasoning: string (optional)
+
+  - name: request_more_docs
+    description: Request one additional supporting document when evidence is insufficient
+    parameters:
+      request_target: string (optional but recommended)
+      requested_doc_type: string (optional)
+      reasoning: string (optional)
+
+# Observation space
+observation_fields:
+  - task_id: string
+  - task_description: string
+  - difficulty: easy|medium|hard
+  - available_documents: list of DocumentSummary
+  - read_documents: dict (doc_id -> full content)
+  - detected_signals: list of FraudSignal (pre-flagged by env)
+  - steps_taken: int
+  - steps_remaining: int
+  - cumulative_reward: float
+  - last_action_result: string|null
+  - last_action_error: string|null
+  - done: bool
+
+# Reward design
+reward:
+  type: dense
+  range: [0.0, 1.0]
+  partial_credit: true
+  signals:
+    - document_read: small positive reward for reading relevant docs
+    - correct_flag: large positive reward for correctly identifying fraud
+    - false_positive: penalty for incorrectly flagging clean records
+    - ownership_hop: per-hop reward for tracing ownership chains
+    - correct_finding: bonus for correct final submission
+    - efficiency_bonus: bonus for solving with fewer steps
+    - loop_penalty: penalty for repeating the same action 3 times
+
+# Baseline
+baseline:
+  script: inference.py
+  model: Qwen/Qwen2.5-72B-Instruct
+  expected_scores:
+    duplicate_billing: 0.70
+    shell_company: 0.45
+    fca_complaint: 0.35
+  runtime_estimate_minutes: 8
+
+# Infrastructure
+infrastructure:
+  runtime: python3.11
+  memory_gb: 2
+  cpu: 1
+  port: 7860
+  framework: fastapi + uvicorn
